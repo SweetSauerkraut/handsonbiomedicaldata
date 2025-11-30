@@ -1,0 +1,634 @@
+#' <details>
+#' <summary style="font-size: 2.5em; font-weight: bold;">
+#' **Setup**
+#' </summary>
+#'<div style="margin-left: 50px; margin-bottom: 30px;"> 
+
+#' <details>
+#' <summary style="font-size: 1em; margin-bottom: 15px;">
+#' **<code>Loading packages</code>**
+#' </summary>
+require(tidyverse)
+require(limma)
+require(ComplexHeatmap)
+#'</details>
+
+#' <details>
+#' <summary style="font-size: 1em; margin-bottom: 15px;">
+#' **<code>Loading data</code>**
+#' </summary>
+setwd("G:/My Drive/. PLUS/. MASTER Medical Biology/ALL COURSES/UE Hands-on Biomedical Data – Resources and Analysis Tools (4.5 ECTS)/Teil Fortelny")
+data <- readRDS("data.RDS")
+metadata <- readRDS("design.RDS")
+gmap <- readRDS("gmap.RDS")
+#'</details>
+
+#' <details>
+#' <summary style="font-size: 1.25em; margin-bottom: 15px;">
+#' **2.1) For all three objects above, answer the following questions:**
+#' </summary>
+#' <div style="display: flex; justify-content: space-between;">
+#'
+#' <div style="width: 32%;">
+#' **What type of object is it?**
+#' <code>**data**</code> is a **matrix**; <code>**metadata**</code> and <code>**gmaps**</code> are **data frames**.
+class(data)
+class(metadata)
+class(gmap)
+#' </div>
+
+#' <div style="width: 32%;">
+#' **How many rows and columns are this object?**
+#' <code>**data**</code> has 22055 rows and 230 columns; <code>**metadata**</code> has 230 rows and 3 columns; <code>**gmaps**</code> has 21923 rows and 2 columns.
+dim(data)
+dim(metadata)
+dim(gmap)
+#' </div>
+
+#' <div style="width: 32%;">
+#' **What information is contained in rows and columns?**
+#' <code>**data**</code> contains gene expression data for immune cells of the epithelium, endothelium and fibroblasts isolated from different organs.
+str(data)
+
+#'<code>**metadata**</code> describes the experimental conditions of each sample
+str(metadata)
+
+#'#'<code>**gmap**</code> maps each gene to standard identifiers
+str(gmap)
+#' </div>
+#' </details>
+
+#' <details>
+#' <summary style="font-size: 1em; margin-bottom: 15px;">
+#' Filtering metadata to liver fibroblasts (**Gp38 positive**) that were treated with **interferon alpha** or **PBS**
+#' </summary>
+metadata <- metadata %>%
+  filter(
+    grepl("GP38pos", cell_type),     
+    stimulus %in% c("IFNa", "PBS"),  
+    organ == "Liver"                
+  )
+
+#'</details>
+
+#' <details>
+#' <summary style="font-size: 1em; margin-bottom: 15px;">
+#' Subsetting data matrix to the same samples in the updated metadata
+#' </summary>
+data <- data[, colnames(data) %in% rownames(metadata)]
+stopifnot(ncol(data) == nrow(metadata))
+#'</details>
+
+#' <details>
+#' <summary style="font-size: 1em; margin-bottom: 15px;">
+#' I also changed the row names and order to make it visually better in the graphs:
+#' </summary>
+rownames(metadata) <-
+  rownames(metadata) |>
+  (\(x) gsub("Liver_Fibroblasts_", "LF_", x))() |>
+  (\(x) gsub("_RNA_", "_", x))()
+
+colnames(data) <-
+  colnames(data) |>
+  (\(x) gsub("Liver_Fibroblasts_", "LF_", x))() |>
+  (\(x) gsub("_RNA_", "_", x))()
+
+head(metadata)
+head(data)
+#'</details>
+#' </div></details>
+
+
+
+
+#' <details>
+#' <summary style="font-size: 2.5em; font-weight: bold;">
+#' **Correlation analysis**
+#' </summary>
+#'<div style="margin-left: 50px; margin-bottom: 30px;"> 
+
+#' <details>
+#' <summary style="font-size: 1.25em; margin-bottom: 15px;">
+#' **2.2) Provide the heatmap of the correlation matrix. Did you (or should you) remove the diagonal from the correlation matrix heatmap?**
+#' </summary>
+#' Using the function <code>**Heatmap()**</code> (***≠ heatmap()!***) instead of <code>pheatpmap</code> this time, and deleting the diagonal 1s since they are not informative and disturb the color coding.
+#+ fig.width=4, fig.height=3
+corMT <- cor(data, method = "spearman")
+diag(corMT) <- NA # removes the diagonal
+Heatmap(corMT,
+  row_names_gp = gpar(fontsize = 8),
+  column_names_gp = gpar(fontsize = 8))
+#'</details>
+
+#' <details>
+#' <summary style="font-size: 1em; margin-bottom: 15px;">
+#' <code>**MDS Projection**</code>
+#' </summary>
+#' This will transform the calculated correlations into distance measures and plot this in 2 dimensions.
+#+ fig.width=5, fig.height=3
+data.frame(cmdscale(dist(2-corMT),eig=TRUE, k=2)$points) |>
+  add_column(stimulus = metadata$stimulus) |>
+  rownames_to_column("sample") |>
+  mutate(sn = gsub("^.+?_(\\d)$", "\\1", sample)) |>  # This shortens the sample names to just the number at the end
+  ggplot(aes(x=X1,y=X2)) + 
+  geom_point(aes(color=stimulus)) +
+  geom_text(aes(label=sn)) +
+  theme_bw()
+#'</details>
+#' </div></details>
+
+
+
+#' <details>
+#' <summary style="font-size: 2.5em; font-weight: bold;">
+#' **Differential expression and data normalization**
+#' </summary>
+#'<div style="margin-left: 50px; margin-bottom: 30px;"> 
+
+#' <details>
+#' <summary style="font-size: 1.25em; margin-bottom: 15px;">
+#' **2.3) Provide the heatmap for a model matrix comparing unstimulated (PBS) to stimulated (IFNa) samples. Which coefficient from the model matrix compares which groups?**
+#' </summary>
+#' **Intercept** corresponds to **PBS** and **stimulus** corresponds to **IFNa**.
+metadata <- metadata |> 
+  mutate(stimulus = as.factor(stimulus)) |> 
+  mutate(stimulus = relevel(stimulus, ref = "PBS"))
+levels(metadata$stimulus)
+
+design_matrix <- model.matrix(~ stimulus, data = metadata)
+#+ fig.width=4, fig.height=3
+pheatmap(design_matrix)
+#' </details>
+
+#' <details>
+#' <summary style="font-size: 1.25em; margin-bottom: 15px;">
+#' **2.4) Use <code>boxplot()</code> to plot the distributions of the first few (30) genes of the original matrix. Try both <code>boxplot(data[1:30,])</code> and <code>boxplot(t(data[1:30,]))</code>. What's the difference?**
+#' </summary>
+#' First, normalizing data by converting raw counts to **counts per million** and taking a **log transformation** to stabilize variance.
+#+ fig.width=7, fig.height=5
+dataVoom <- voom(data, design=design_matrix, plot = TRUE)
+#'<div style="width: 48%; float: left;">
+#'### Using **<code>boxplot(data[1:30,])</code>**
+#' Shows the gene expression of the first 30 genes (rows) for all 6 samples/conditions (columns), without specifying which genes are expressed in which sample.
+#+ fig.width=5, fig.height=5
+boxplot(data[1:30,],
+        las = 2, cex.axis = 0.6) # rotates x-axis and makes text smaller
+#'</div>
+
+#'<div style="width: 48%; float: right;">
+#'### Using **<code>boxplot(t(data[1:30,]))</code>**
+#' Transposes the x and y axis and shows the distribution of the first 30 genes across all 6 samples.
+#+ fig.width=5, fig.height=5
+boxplot(t(data[1:30,]),
+        las = 2, cex.axis = 0.6)
+#'</div>
+#'<div style="clear:both;"></div>
+#' </details>
+
+#' <details>
+#' <summary style="font-size: 1.25em; margin-bottom: 15px;">
+#' **2.5) Now let's look at the density of one gene (ENSMUSG00000000078) using three approaches: <code>plot(density(data[8,]))</code>, <code>plot(density(dataVoom$E[8,]))</code>, and <code>plot(density(log2(data[8,])))</code>. What's the difference?**
+#' </summary>
+
+#' <div style="display: flex; justify-content: space-between;">
+#'
+#' <div style="width: 32%;">
+#' Approach 1: distribution of **raw count** of gene #8 across all samples including the times this gene was counted zero times
+#+ fig.width=5, fig.height=3
+plot(density(data[8,]))
+#' </div>
+#'
+#' <div style="width: 32%;">
+#' Approach 2: **log-transform** of raw counts to stabilize variance across samples and reduce skewness, but not adjusted for library size.
+#+ fig.width=5, fig.height=3
+plot(density(log2(data[8,])))
+#' </div>
+#' 
+#' <div style="width: 32%;">
+#' Approach 3: **voom-normalized** raw counts, i.e. log transformation + adjusted for library size.
+#+ fig.width=5, fig.height=3
+plot(density(dataVoom$E[8,]))
+#' </div>
+#' </details>
+
+#' <details>
+#' <summary style="font-size: 1em; margin-bottom: 15px;">
+#' **<code>Performing differential expression</code>**
+#' </summary>
+limmaFit <- lmFit(dataVoom, design=design_matrix)
+limmaFit <- eBayes(limmaFit)
+head(coef(limmaFit))
+
+#' Extracting results:
+limmaRes <- list() # start an empty list
+for(coefx in colnames(coef(limmaFit))){ # run a loop for each coefficient
+  limmaRes[[coefx]] <- topTable(limmaFit, coef=coefx,number = Inf) # topTable returns the statistics of our genes. We then store the result of each coefficient in a list.
+}
+limmaRes <- bind_rows(limmaRes, .id = "coef") # bind_rows combines the results and stores the name of the coefficient in the column "coef"
+limmaRes <- filter(limmaRes, coef != "(Intercept)") # then we keep all results except for the intercept
+#'</details>
+#' </div></details>
+
+
+
+
+#' <details>
+#' <summary style="font-size: 2.5em; font-weight: bold;">
+#' **Data Interpretation**
+#' </summary>
+#'<div style="margin-left: 50px; margin-bottom: 30px;"> 
+
+#' <details>
+#' <summary style="font-size: 1.25em; margin-bottom: 15px;">
+#' **2.6) Draw a volcano plot from the <code>limmaRes</code> object using a scatterplot <code>geom_point</code>. The point has many thousand points (genes). Can you overcome this overplotting by using transparency (e.g. <code>alpha=0.3</code>) or binning (e.g. <code>geom_hex</code>)?**
+#' </summary>
+#'<div style="width: 48%; float: left;">
+#+ fig.width=4, fig.height=3
+ggplot(
+  data = limmaRes, 
+  mapping = aes(x = logFC, y = -log10(P.Value))) +
+  geom_point(alpha = 0.3) +
+  theme_minimal() + 
+  labs(
+    x = "Log2 Fold change",
+    y = "-Log10 P-value"
+  )
+#' </div>
+#'<div style="width: 48%; float: right;">
+#+ fig.width=4, fig.height=3
+ggplot(
+  data = limmaRes, 
+  mapping = aes(x = logFC, y = -log10(P.Value))) +
+  geom_hex(bins = 60) +
+  theme_minimal() + 
+  labs(
+    x = "Log2 Fold change",
+    y = "-Log10 P-value"
+  )
+#'</div>
+#'<div style="clear:both;">
+#' </details>
+
+#' <details>
+#' <summary style="font-size: 1.25em; margin-bottom: 15px;">
+#' **2.7) Draw a p-value distribution using <code>geom_histogram</code>.**
+#' </summary>
+#+ fig.width=4, fig.height=3
+ggplot(limmaRes, 
+  aes(x = P.Value)) +
+  geom_histogram(binwidth = 0.025, fill = "#537C8E", color = "#000000")  +
+  theme_minimal() + 
+  labs(
+    title = "P value distribution",
+    x = "P value",
+    y = "Count") +
+  theme(
+    plot.title = element_text(hjust = 0.5)  # center the title
+  )
+#'</details>
+
+#' <details>
+#' <summary style="font-size: 1.25em; margin-bottom: 15px;">
+#' **2.8)  Is this distribution as expected? Use <code>fill=factor(floor(AveExpr)</code> to color the bins by the average expression level of each gene. Should you filter some genes? Which ones? If so, filter the genes, overwrite <code>limmaRes</code> with the result of the filtering and continue with the corrected data.**
+#' </summary>
+#' **No!** There is an outlier (average expression = -4) that should be filtered out.
+
+limmaRes <- limmaRes |>
+  filter(AveExpr > -4)
+#+ fig.width=5, fig.height=5
+ggplot(limmaRes, 
+       aes(x = P.Value, fill = factor(floor(AveExpr)))) +
+  geom_histogram(binwidth = 0.025, color = "#000000")  +
+  theme_minimal() + 
+  labs(
+    title = "P value distribution by average expression",
+    x = "P value",
+    y = "Count",
+    fill = "Floor(AveExpr)") +
+  theme(
+    plot.title = element_text(hjust = 0.5)  # center the title
+  ) +
+  guides(fill = guide_legend(ncol = 2))
+#' </details>
+
+#' <details>
+#' <summary style="font-size: 1.25em; margin-bottom: 15px;">
+#' **2.9) Report the number of tested and significant genes for the comparison of stimulated versus unstimulated.**
+#' </summary>
+# Counting number of tested genes:
+limmaRes %>% count()
+
+# Creating a table with genes that only change significantly between conditions, filtering out genes that are lowly expressed:
+limmaResSig <- limmaRes %>%
+  filter(adj.P.Val <= 0.05)
+
+# Checking number of significant genes:
+nrow(limmaResSig)
+#' </details>
+#' </div></details>
+
+
+#' <details>
+#' <summary style="font-size: 2.5em; font-weight: bold;">
+#' **Visualizing results**
+#' </summary>
+#'<div style="margin-left: 50px; margin-bottom: 30px;"> 
+
+#' <details>
+#' <summary style="font-size: 1.25em; margin-bottom: 15px;">
+#' **2.10.1) Pick one gene with significant effects and a large absolute (negative or positive) log fold change from limmaResSig. Report the log fold change.**
+#' </summary>
+#' > Chosen gene: **ENSMUSG00000020638**, with a log fold change of *12.27273*
+limmaResSig_largest_logFC <- limmaResSig %>%
+  arrange(desc(logFC)) %>%
+  select(logFC)
+head(limmaResSig_largest_logFC)
+#'</details>
+
+#' <details>
+#' <summary style="font-size: 1.25em; margin-bottom: 15px;">
+#' **2.10.2) Now create a table that we can use to plot this gene. To this end, modify the table metadata by adding the normalized expression of your gene of interest, taken from <code>dataVoom$E</code>, as a new column.**
+#' </summary>
+gene_of_interest <- dataVoom$E["ENSMUSG00000020638", ] # extracts normalized data of gene of interest
+
+metadata <- metadata %>% mutate(gene_ENSMUSG00000020638 = gene_of_interest) # adds it as a new column in metadata
+view(metadata)
+#'</details>
+
+#' <details>
+#' <summary style="font-size: 1.25em; margin-bottom: 15px;">
+#' **2.10.3) Generate a plot, where the x-axis is the stimulus (IFNa or PBS) and the y-axis is the expression of the gene. Does the observed difference on this plot fit to the log fold change?**
+#' </summary>
+#+ fig.width=5, fig.height=3
+ggplot(metadata, aes(x = stimulus, y = gene_ENSMUSG00000020638)) +
+  geom_point(aes(fill = stimulus), shape = 21, color = "black", size = 3, alpha = 0.8) + 
+  theme_minimal() +
+  labs(
+    title = "Expression of ENSMUSG00000020638 by stimulus",
+    subtitle = "adj.P.Val = 2.303569e-05         log2FC = 12.27273", 
+    x = "Stimulus",
+    y = "Normalized Expression (voom)"
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5),  # center the title
+    plot.subtitle = element_text(hjust = 0.5)  # center the subtitle
+  )
+#'> The plot does not show the exact **12.2** estimated for logFC in <code>limmaResSig</code> because limmaResSig gives an average of all IFNastimulus in different samples, while the plot uses the actual individual values from <code>dataVoom</code>, 
+#'</details>
+
+#' <details>
+#' <summary style="font-size: 1.25em; margin-bottom: 15px;">
+#' **2.11.1) From <code>limmaResSig</code>, get the 30 genes with the greatest absolute logFC using the command <code>slice_max()</code>, which we saw on day 1, and save their ENSEMBL IDs, which are the row names of the table, in the object goi (genes of interest) using the function <code>row.names()</code>. What is the content of <code>goi</code>?**
+#' </summary>
+top30 <- limmaResSig %>%
+  slice_max(order_by = abs(logFC), n = 30)
+goi <- row.names(top30)
+goi
+#'</details>
+
+#' <details>
+#' <summary style="font-size: 1.25em; margin-bottom: 15px;">
+#' **2.11.2) Generate a heatmap of their gene expression from <code>dataVoom$E</code> using <code>Heatmap()</code>.**
+#' </summary>
+#+ fig.width=5, fig.height=8
+expression_goi <- dataVoom$E[goi, ]
+Heatmap(expression_goi)
+#'</details>
+
+#' <details>
+#' <summary style="font-size: 1.25em; margin-bottom: 15px;">
+#' **2.11.3) Scale the expression of all genes (rows of your matrix) using <code>t(scale(t(HM)))</code>, where HM is the matrix. See <code>t()</code> and <code>scale()</code> for details.**
+#' </summary>
+#+ fig.width=5, fig.height=8
+expression_goi_scaled <- t(scale(t(expression_goi)))
+Heatmap(expression_goi_scaled)
+#'</details>
+
+#' <details>
+#' <summary style="font-size: 1.25em; margin-bottom: 15px;">
+#' **2.11.4) Split the rows into up- and down-regulated genes using <code>row_split=ifelse...</code> in the heatmap function <code>Heatmap()</code>. Next, split the columns based on stimulus: <code>column_split = metadata$stimulus</code>**
+#' </summary>
+#+ fig.width=7, fig.height=7
+Heatmap(
+  expression_goi_scaled,
+  row_split = ifelse(limmaRes[goi,]$logFC > 0, "up", "down"),
+  column_split = metadata$stimulus
+        )
+#'</details>
+#' </div></details>
+
+
+#' <details>
+#' <summary style="font-size: 2.5em; font-weight: bold;">
+#' **Enrichment analysis**
+#' </summary>
+#'<div style="margin-left: 50px; margin-bottom: 30px;"> 
+
+#' <details>
+#' <summary style="font-size: 1em; margin-bottom: 15px;">
+#' **Filter all genes with logFC > 0 from the table of significant genes and store their Ensembl IDs (as a vector) in the object goi. Next convert the ENSEMBL IDs to gene symbols.**
+#' </summary>
+limmaRes_up <- limmaResSig %>%
+  filter(logFC > 0)
+goi <- row.names(limmaRes_up)
+glimpse(goi)
+
+goi <- gmap[goi, ]$external_gene_name |> unique()
+glimpse(goi)
+#'</details>
+
+#' <details>
+#' <summary style="font-size: 1em; margin-bottom: 15px;">
+#' **Prepare the background/universe set**
+#' </summary>
+universe <- unique(gmap$external_gene_name)
+universe <- unique(universe[!is.na(universe) & universe != ""])
+#'</details>
+
+#' <details>
+#' <summary style="font-size: 1em; margin-bottom: 15px;">
+#' **Perform Fisher's exact test enrichment with the object MSigDBand and store the results in the table fisher_tb**
+#' </summary>
+MSigDB <- readRDS("MSigDB.rds")
+fisher_tbl <- map_df(names(MSigDB), function(pw) {
+  pw_genes <- MSigDB[[pw]]
+  sig_genes <- goi
+  overlap <- intersect(sig_genes, pw_genes)
+  a <- length(overlap)
+  b <- length(sig_genes) - a
+  c <- length(pw_genes) - a
+  d <- length(universe) - (a+b+c)
+  
+  ft <- fisher.test(matrix(c(a,b,c,d),2), alternative = "greater")
+  
+  tibble(
+    pathway = pw,
+    pvalue = ft$p.value,
+    odds_ratio = as.numeric(ft$estimate),
+    DE_in_pathway = a,
+    overlapping_genes = paste(overlap, collapse = ",")
+  )
+})
+
+#' Correct for multiple testing:
+fisher_tbl <-  mutate(fisher_tbl, p_adj = p.adjust(pvalue, "BH"))
+
+#' And filter the results based on the top 30 significant hits:
+top_30 <- fisher_tbl %>%
+  arrange(p_adj) %>%
+  slice_head(n = 30) 
+#'</details>
+
+#' <details>
+#' <summary style="font-size: 1.25em; font-weight: bold;">
+#' **2.12) Now visualize the results based on the top 30 significant hits **
+#' </summary>
+#+ fig.width=8, fig.height=8
+ggplot(top_30, aes(
+  x = log(odds_ratio),
+  y = reorder(pathway, odds_ratio),
+  size = -log10(p_adj),
+  color = log2(odds_ratio)
+)) +
+  geom_point() +
+  scale_size_continuous(name = "-log10(p_adj)") +
+  scale_color_gradient(low = "lightblue", high = "darkblue", name = "log2(odds_ratio)") +
+  labs(
+    x = "log2(odds_Ratio)",
+    y = "Pathway",
+    title = "Top 30 Enriched Pathways"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.text.y = element_text(size = 10),
+    plot.title = element_text(face = "bold", hjust = 0.5)
+  )
+#' </details>
+#' </div></details>
+
+
+#' <details>
+#' <summary style="font-size: 2.5em; font-weight: bold;">
+#' **Final Questions**
+#' </summary>
+#'<div style="margin-left: 50px; margin-bottom: 30px;"> 
+
+
+#' <details>
+#' <summary style="font-size: 1.25em; margin-bottom: 15px;">
+#' **2.13) Looking at the correlation heatmap and MDS plot - do you see strong effects and clear differences between groups? Discuss the signal to noise ratio of this dataset.**
+#' </summary>
+#' The **heatmap** suggests a moderate signal separating IFNa and PBS, but high variability within groups (while IFNa1 and IFNa3 are highly correlated, IFNa2 shows weaker correlation to the other IFNa samples, while the same happens with PBS). 
+#' 
+#' This is also confirmed by the **MDS Plot**: There is a tendency of separation between IFNa and PBS samples along the X1 axis, but the samples PBS1 and IFNa2 do not follow this trend.
+#' 
+#' Thus, given the **high signal-to-noise ratio** within replicates, more replicates would be necessary in order to take more assertive conclusions.
+#' 
+#'<div style="width: 48%; float: left;">
+#'**<code>Heatmap(corMT)</code>:**
+#+ fig.width=5, fig.height=3
+Heatmap(corMT,
+        row_names_gp = gpar(fontsize = 8),
+        column_names_gp = gpar(fontsize = 8))
+#'</div>
+#'<div style="width: 48%; float: right;">
+#'**<code>MDS Plot:</code>**
+#+ fig.width=5, fig.height=3
+data.frame(cmdscale(dist(2-corMT),eig=TRUE, k=2)$points) |>
+  add_column(stimulus = metadata$stimulus) |>
+  rownames_to_column("sample") |>
+  mutate(sn = gsub("^.+?_(\\d)$", "\\1", sample)) |>  # This shortens the sample names to just the number at the end
+  ggplot(aes(x=X1,y=X2)) + 
+  geom_point(aes(color=stimulus)) +
+  geom_text(aes(label=sn)) +
+  theme_bw()
+#'</div>
+#'<div style="clear:both;"></div>
+#' </details>
+
+#' <details>
+#' <summary style="font-size: 1.25em; margin-bottom: 15px;">
+#' **2.14) Do you trust the results of differential expression? Do the observed differences in the (normalized) data fit to the log fold changes and p-values obtained from the statistical tests?**
+#' </summary>
+
+#'**Volcano map of differential gene expression:**
+#+ fig.width=5, fig.height=3
+ggplot(
+  data = limmaRes, 
+  mapping = aes(x = logFC, y = -log10(P.Value))) +
+  geom_point(alpha = 0.3) +
+  theme_minimal() + 
+  labs(
+    x = "Log2 Fold change",
+    y = "-Log10 P-value"
+  )
+
+#'<div style="width: 48%; float: left;">
+#'**Highest logFC values** in normalized data:
+limmaRes %>% arrange(desc(logFC)) %>% head(5) %>% select(logFC)
+
+#'**Lowest logFC values** in normalized data:
+limmaRes %>% arrange(logFC) %>% head(5) %>% select(logFC)
+#'</div>
+#'<div style="width: 48%; float: right;">
+#'The volcano plot shows **many extreme logFCs**, i.e. points that distance themselves from the 0 in the x-axis.
+#'
+#'This is **in accordance to the logFC values** from normalized data, which range from -11.646950 to 12.272730.
+#'
+#' By filtering the normalized expression of genes with a logFC >10 and < -10, we can see that extreme logFC values represent a trend of overexpression in one condition accompanied by underexpression in the other (see below).
+#' 
+#' Thus, the results of differential expression are **trustworthy** since estimated log fold changes match (indicating reliability of the model), *as long as the data set is filtered by P-value distribution*. 
+extreme_genes <- dataVoom$E[rownames(limmaRes %>% filter(logFC > 10 | logFC < -10)), 
+                           c("LF_IFNa_1","LF_IFNa_2","LF_IFNa_3","LF_PBS_1","LF_PBS_2","LF_PBS_3")]
+expr <- as.data.frame(extreme_genes) %>%
+  tibble::rownames_to_column(var = "gene") %>%
+  pivot_longer(cols = -gene, names_to = "sample", values_to = "expression") %>%
+  left_join(metadata %>% tibble::rownames_to_column(var="sample"), by = "sample")
+#+ fig.width=5, fig.height=4
+ggplot(expr, aes(x = stimulus, y = expression)) +
+  geom_boxplot() +
+  geom_jitter(width = 0.2) +
+  facet_wrap(~ gene, scales = "free_y") +
+  labs(
+    title = "Differential expression patterns of genes with extreme logFC")
+#'</div>
+#'<div style="clear:both;"></div>
+#' </details>
+
+
+#' <details>
+#' <summary style="font-size: 1.25em; margin-bottom: 15px;">
+#' **2.15) Looking at the enriched genes and pathways - are the results expected?**
+#' </summary>
+#'<div style="width: 48%; float: left;">
+ggplot(top_30, aes(
+  x = log(odds_ratio),
+  y = reorder(pathway, odds_ratio),
+  size = -log10(p_adj),
+  color = log2(odds_ratio)
+)) +
+  geom_point() +
+  scale_size_continuous(name = "-log10(p_adj)") +
+  scale_color_gradient(low = "lightblue", high = "darkblue", name = "log2(odds_ratio)") +
+  labs(
+    x = "log2(odds_Ratio)",
+    y = "Pathway",
+    title = "Top 30 Enriched Pathways"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.text.y = element_text(size = 10),
+    plot.title = element_text(face = "bold", hjust = 0.5)
+  )
+#'</div>
+#'<div style="width: 48%; float: right;">
+#' The graph shows the strongest and most significant enrichment for **interferon alpha and interferon gamma**.
+#' 
+#' This goes along with the hypothesis that IFN stimulation changes gene expression in liver fibroblasts, leading to other immune response-related pathways being also affected, although at a lower degree/significance (e.g. TNFa and IL6)
+#'</div>
+#'<div style="clear:both;"></div>
+#' </details>
+#' </div></details>
+
+
+
